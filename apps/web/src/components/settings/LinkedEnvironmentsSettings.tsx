@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { AuthMcpClientAccess, type EnvironmentId, type PeerLinkSummary } from "@t3tools/contracts";
+import type { AuthMcpClientAccess, EnvironmentId, PeerLinkSummary } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -13,7 +13,7 @@ import { requestConfirmDialog } from "~/confirmDialog";
 import { peerLinkEnvironment } from "~/state/peerLinks";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { AccessOption, accessConfig } from "../auth/ConnectAgentSurface";
+import { accessConfig } from "../auth/ConnectAgentSurface";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
 import { Button } from "../ui/button";
 import {
@@ -28,9 +28,9 @@ import {
   DialogTrigger,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { RadioGroup } from "../ui/radio-group";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
+import { LinkAccessPicker } from "./LinkAccessPicker";
 import { SettingsRow, SettingsSection, useRelativeTimeTick } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 
@@ -161,7 +161,6 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
   const [access, setAccess] = useState<AuthMcpClientAccess>("approval-required");
   const [busy, setBusy] = useState(false);
   const formId = useId();
-  const accessLabelId = `${formId}-access`;
   const link = useAtomCommand(peerLinkEnvironment.link, { label: "link environment" });
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
@@ -242,26 +241,7 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
                 spellCheck={false}
               />
             </label>
-            <div className="space-y-2">
-              <span id={accessLabelId} className="block text-xs font-medium">
-                What agents here may do there
-              </span>
-              <RadioGroup
-                aria-labelledby={accessLabelId}
-                disabled={busy}
-                value={access}
-                onValueChange={(value) => setAccess(value as AuthMcpClientAccess)}
-              >
-                {AuthMcpClientAccess.literals.map((option) => (
-                  <AccessOption key={option} access={option} selected={option === access} />
-                ))}
-              </RadioGroup>
-              <p className="text-xs text-muted-foreground">
-                An agent never gets more access there than its own mode here. Below full access, it
-                can change only threads this link started, not that environment's own threads,
-                projects or settings.
-              </p>
-            </div>
+            <LinkAccessPicker value={access} onChange={setAccess} disabled={busy} />
           </form>
         </DialogPanel>
         <DialogFooter variant="bare">
