@@ -1,42 +1,19 @@
-import { mintPeerPairingCode } from "@t3tools/client-runtime/state/peerPairingCode";
+import { createPeerPairingCodeCommand } from "@t3tools/client-runtime/state/peerPairingCode";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import { Atom, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "./atom-registry";
-import { environmentSession } from "./session";
 
-// Each read mints a new one-use code; nothing keeps one once it is read.
-const peerPairingCodeAtom = Atom.family((environmentId: EnvironmentId) =>
-  connectionAtomRuntime
-    .atom((get) => {
-      const prepared = Option.getOrNull(
-        get(environmentSession.preparedConnectionValueAtom(environmentId)),
-      );
-      if (prepared === null) return Effect.never;
-      return mintPeerPairingCode(prepared);
-    })
-    .pipe(Atom.withLabel(`mobile-peer-pairing-code:${environmentId}`)),
-);
+const mintPairingCode = createPeerPairingCodeCommand(connectionAtomRuntime);
 
 /**
  * A fresh pairing code minted on `environmentId` with this client's session
- * there, for answering a link request. Fails with `PeerPairingCodeError` when
- * the session may not create one.
+ * there, for answering a link request. Rejects with `PeerPairingCodeError`
+ * when the session may not create one.
  */
-export function mintPairingCodeOn(environmentId: EnvironmentId): Promise<string> {
-  const atom = peerPairingCodeAtom(environmentId);
-  appAtomRegistry.refresh(atom);
-  return Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* AtomRegistry.mount(appAtomRegistry, atom);
-        return yield* AtomRegistry.getResult(appAtomRegistry, atom, {
-          suspendOnWaiting: true,
-        }).pipe(Effect.timeout("15 seconds"));
-      }),
-    ),
-  );
+export async function mintPairingCodeOn(environmentId: EnvironmentId): Promise<string> {
+  const result = await mintPairingCode.run(appAtomRegistry, { environmentId, input: undefined });
+  if (result._tag === "Success") return result.value;
+  throw squashAtomCommandFailure(result);
 }

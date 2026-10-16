@@ -12,11 +12,17 @@ import {
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type * as HttpClient from "effect/http/HttpClient";
+import * as Option from "effect/Option";
+import type { Atom } from "effect/reactivity";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import type { PreparedConnection } from "../connection/model.ts";
+import type { EnvironmentRegistry } from "../connection/registry.ts";
+import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./environmentHttpAuth.ts";
+import { createEnvironmentCommand } from "./runtime.ts";
 
 const MINT_TIMEOUT_MS = 8_000;
 const PEER_PAIRING_CODE_LABEL = "T3 Code link";
@@ -38,7 +44,7 @@ export class PeerPairingCodeError extends Data.TaggedError("PeerPairingCodeError
   }
 }
 
-export const mintPeerPairingCode = Effect.fn("clientRuntime.state.mintPeerPairingCode")(function* (
+const mintPeerPairingCode = Effect.fn("clientRuntime.state.mintPeerPairingCode")(function* (
   prepared: PreparedConnection,
 ): Effect.fn.Return<string, PeerPairingCodeError, HttpClient.HttpClient> {
   const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
@@ -73,3 +79,27 @@ export const mintPeerPairingCode = Effect.fn("clientRuntime.state.mintPeerPairin
   );
   return minted.credential;
 });
+
+/**
+ * Mints a code on the environment it runs in. Each run mints its own: a code
+ * is one-use, so two overlapping answers must never share one.
+ */
+export function createPeerPairingCodeCommand<R, E>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | R, E>,
+) {
+  return createEnvironmentCommand(runtime, {
+    label: "environment-data:peer-pairing-code:mint",
+    execute: (_input: void) =>
+      Effect.gen(function* () {
+        const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+        const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+        if (Option.isNone(prepared)) {
+          return yield* new PeerPairingCodeError({
+            reason: "unavailable",
+            cause: "The environment is not connected.",
+          });
+        }
+        return yield* mintPeerPairingCode(prepared.value);
+      }),
+  });
+}
