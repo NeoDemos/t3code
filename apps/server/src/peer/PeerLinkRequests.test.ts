@@ -20,8 +20,12 @@ import { expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -700,6 +704,73 @@ it.live("a steer that restarts the turn leaves its open card answerable", () =>
       });
       expect((yield* outcomeMessages(a)).messages).toHaveLength(1);
     }),
+  ),
+);
+
+it.live("a slow machine holds up only its own card's answer", () =>
+  withBoth((a, b) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        // A machine that takes the descriptor request and answers when the test says.
+        const reached = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const slow = yield* Layer.build(Layer.fresh(NodeHttpServer.layerTest));
+        const server = Context.get(slow, HttpServer.HttpServer);
+        yield* server.serve(
+          Deferred.succeed(reached, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as(HttpServerResponse.empty({ status: 404 })),
+          ),
+        );
+        if (server.address._tag === "UnixPathAddress") return yield* Effect.die("expected TCP");
+        const slowUrl = `http://127.0.0.1:${server.address.port}`;
+
+        yield* seedThread(a);
+        // Recorded directly: asking would probe the slow machine before the answer does.
+        const slowCard = { id: TurnItemId.make("turn-item:link-request:slow") };
+        yield* a.orchestrator.dispatch({
+          type: "link_request.record",
+          commandId: CommandId.make("command:pending:slow"),
+          threadId,
+          runId,
+          nodeId: rootNode,
+          turnItemId: slowCard.id,
+          url: slowUrl,
+          reason: "",
+          linkStatus: "pending",
+        });
+        yield* a.call({ url: b.url, clientRequestId: "box" });
+        const boxCard = (yield* a.orchestrator.getThreadProjection(threadId)).turnItems.find(
+          (item) => item.type === "link_request" && item.url === b.url,
+        )!;
+
+        const slowAnswer = yield* a.requests
+          .answer({
+            threadId,
+            turnItemId: slowCard.id,
+            answer: { type: "link", urls: [slowUrl], access: "auto", pairingCode: "code" },
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(reached);
+
+        // While the slow machine holds its card, the user answers the other one.
+        yield* a.requests.answer({ threadId, turnItemId: boxCard.id, answer: { type: "decline" } });
+        const items = (yield* a.orchestrator.getThreadProjection(threadId)).turnItems;
+        expect(items.find((item) => item.id === boxCard.id)).toMatchObject({
+          linkStatus: "declined",
+        });
+        expect(items.find((item) => item.id === slowCard.id)).toMatchObject({
+          linkStatus: "pending",
+        });
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(slowAnswer);
+        const failed = (yield* a.orchestrator.getThreadProjection(threadId)).turnItems.find(
+          (item) => item.id === slowCard.id,
+        );
+        expect(failed).toMatchObject({ linkStatus: "failed" });
+      }),
+    ),
   ),
 );
 

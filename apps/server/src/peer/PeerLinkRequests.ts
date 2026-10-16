@@ -40,7 +40,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Semaphore from "effect/Semaphore";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -303,8 +303,9 @@ const make = Effect.gen(function* () {
     }
   };
 
-  // One answer at a time: two answers racing on one card must not both link.
-  const answerLock = yield* Semaphore.make(1);
+  // One answer per card at a time: two answers racing on one card must not
+  // both link. Other cards go on while a slow peer holds one.
+  const answerLocks = yield* KeyedLock.make<TurnItemId>();
   const answer: PeerLinkRequests["Service"]["answer"] = (input) =>
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({
@@ -336,7 +337,10 @@ const make = Effect.gen(function* () {
       ).pipe(
         Effect.mapError((cause) => new PeerLinkRequestError({ reason: "record_failed", cause })),
       );
-    }).pipe(answerLock.withPermits(1), Effect.withSpan("PeerLinkRequests.answer"));
+    }).pipe(
+      (effect) => answerLocks.withLock(input.turnItemId, effect),
+      Effect.withSpan("PeerLinkRequests.answer"),
+    );
 
   return PeerLinkRequests.of({ request, answer });
 });
