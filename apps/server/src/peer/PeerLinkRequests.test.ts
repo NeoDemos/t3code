@@ -479,6 +479,29 @@ it.live("a retry of a pending request returns pending and shows no second card",
   ),
 );
 
+it.live("a later provider session reusing a clientRequestId gets a card of its own", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      const first = yield* a.call({ url: b.url, clientRequestId: "link" });
+      const later = yield* a.call(
+        { environmentId: box.environmentId, clientRequestId: "link" },
+        {
+          ...scope,
+          requestNamespace: "provider-session:laptop-2",
+          thread: { ...scope.thread!, providerSessionId: "provider-session:laptop-2" },
+        },
+      );
+      expect(later.structuredContent).toMatchObject({ status: "pending" });
+      expect(later.structuredContent).not.toEqual(first.structuredContent);
+      const cards = (yield* a.orchestrator.getThreadProjection(threadId)).turnItems.filter(
+        (item) => item.type === "link_request",
+      );
+      expect(cards).toHaveLength(2);
+    }),
+  ),
+);
+
 it.live("a declined request links nothing and tells the agent", () =>
   withBoth((a, b) =>
     Effect.gen(function* () {

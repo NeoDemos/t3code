@@ -174,10 +174,11 @@ const make = Effect.gen(function* () {
         }
       }
       const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
-      // Turn item ids are global; scope the key to this thread. A retry with
-      // the same clientRequestId finds this card and records nothing.
+      // Turn item ids are global; scope the key to this thread and provider
+      // session, since a later session may reuse it. A retry with the same
+      // clientRequestId finds this card and records nothing.
       const turnItemId = TurnItemId.make(
-        `turn-item:link-request:${encodeURIComponent(threadId)}:${encodeURIComponent(key)}`,
+        `turn-item:link-request:${encodeURIComponent(threadId)}:${encodeURIComponent(scope.requestNamespace)}:${encodeURIComponent(key)}`,
       );
       if (input.clientRequestId !== undefined) {
         const existing = yield* readCard(threadId, turnItemId).pipe(Effect.mapError(unreadable));
