@@ -262,6 +262,12 @@ function LinkRequestDialog(props: {
     setError(null);
   };
 
+  // Every close resets, so a reopened dialog never shows the last answer or its pairing code.
+  const close = () => {
+    props.onOpenChange(false);
+    reset();
+  };
+
   const submit = async () => {
     if (inFlight.current || target.kind === "none") return;
     inFlight.current = true;
@@ -299,8 +305,7 @@ function LinkRequestDialog(props: {
       const result = await answer({ environmentId: props.environmentId, input });
       if (result._tag === "Success") {
         // The card switches to its answered row once the item updates.
-        setPairingCode("");
-        props.onOpenChange(false);
+        close();
         return;
       }
       if (!isAtomCommandInterrupted(result)) {
@@ -321,8 +326,8 @@ function LinkRequestDialog(props: {
       onOpenChange={(next) => {
         // An answer that lands after a close would still link, and would close a reopened dialog.
         if (!next && busy) return;
-        props.onOpenChange(next);
-        if (!next) reset();
+        if (next) props.onOpenChange(true);
+        else close();
       }}
     >
       <WizardPopup>
@@ -441,12 +446,7 @@ function LinkRequestDialog(props: {
               Back
             </Button>
           ) : (
-            <Button
-              variant="outline"
-              type="button"
-              disabled={busy}
-              onClick={() => props.onOpenChange(false)}
-            >
+            <Button variant="outline" type="button" disabled={busy} onClick={close}>
               Cancel
             </Button>
           )}
