@@ -14,6 +14,7 @@ import {
   type RuntimeMode,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
@@ -344,6 +345,55 @@ const endRun = (a: Laptop) =>
     });
   });
 
+/** A steer restarts the agent's turn: its run gets a new root node. */
+const restartRun = (a: Laptop) =>
+  Effect.gen(function* () {
+    const projection = yield* a.orchestrator.getThreadProjection(threadId);
+    const run = projection.runs.find((candidate) => candidate.id === runId)!;
+    const node = projection.nodes.find((candidate) => candidate.id === rootNode)!;
+    const restarted = NodeId.make("node:laptop:root:2");
+    const now = yield* DateTime.now;
+    yield* a.sink.write({
+      commandId: CommandId.make("command:restart-run:laptop"),
+      events: [
+        {
+          id: EventId.make("event:restart-node"),
+          type: "node.updated",
+          threadId,
+          runId,
+          nodeId: restarted,
+          driver,
+          providerInstanceId: instanceId,
+          occurredAt: now,
+          payload: { ...node, id: restarted, rootNodeId: restarted, startedAt: now },
+        },
+        {
+          id: EventId.make("event:restart-run"),
+          type: "run.updated",
+          threadId,
+          runId,
+          nodeId: restarted,
+          providerInstanceId: instanceId,
+          occurredAt: now,
+          payload: { ...run, rootNodeId: restarted },
+        },
+      ],
+    });
+  });
+
+/** What `request` records for a new card, as if it read the run before anything changed. */
+const recordPendingCard = (a: Laptop, key: string) =>
+  a.orchestrator.dispatch({
+    type: "link_request.record",
+    commandId: CommandId.make(`command:pending:${key}`),
+    threadId,
+    runId,
+    nodeId: rootNode,
+    turnItemId: TurnItemId.make(`turn-item:link-request:${key}`),
+    reason: "",
+    linkStatus: "pending",
+  });
+
 /**
  * Every row of every table in the laptop's database, as text, to scan for
  * anything leaked: events, projections, receipts and outbox alike.
@@ -589,6 +639,66 @@ it.live("stopping the thread closes its open card, which then takes no answer", 
       expect(yield* cardOf(a)).toMatchObject({ status: "cancelled", linkStatus: "cancelled" });
       // The user stopped the thread: nothing wakes the agent.
       expect((yield* outcomeMessages(a)).messages).toHaveLength(0);
+    }),
+  ),
+);
+
+it.live("a request that read the run before Stop shows no card once Stop lands", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      yield* a.call({ url: b.url });
+      const open = yield* pendingCard(a);
+      yield* a.orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("command:stop:laptop"),
+        threadId,
+      });
+      const late = yield* recordPendingCard(a, "after-stop").pipe(Effect.flip);
+      expect(String(late.cause)).toContain("not active");
+      const cards = (yield* a.orchestrator.getThreadProjection(threadId)).turnItems.filter(
+        (item) => item.type === "link_request",
+      );
+      expect(cards.map((card) => card.id)).toEqual([open.id]);
+    }),
+  ),
+);
+
+it.live("a card shows up only while its run is going, and takes an answer after", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      yield* a.call({ url: b.url });
+      const card = yield* pendingCard(a);
+      yield* endRun(a);
+      const late = yield* recordPendingCard(a, "after-end").pipe(Effect.flip);
+      expect(String(late.cause)).toContain("not active");
+      yield* a.requests.answer({ threadId, turnItemId: card.id, answer: { type: "decline" } });
+      expect(yield* cardOf(a)).toMatchObject({ linkStatus: "declined" });
+    }),
+  ),
+);
+
+it.live("a steer that restarts the turn leaves its open card answerable", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      yield* a.call({ url: b.url });
+      const card = yield* pendingCard(a);
+      yield* restartRun(a);
+      const pairing = yield* b.auth.issuePairingCredential();
+      yield* a.requests.answer({
+        threadId,
+        turnItemId: card.id,
+        answer: { type: "link", urls: [b.url], access: "auto", pairingCode: pairing.credential },
+      });
+      // The card keeps the node it was asked from, and the agent hears the answer.
+      expect(yield* cardOf(a)).toMatchObject({
+        linkStatus: "linked",
+        nodeId: rootNode,
+        linkedEnvironmentId: box.environmentId,
+      });
+      expect((yield* outcomeMessages(a)).messages).toHaveLength(1);
     }),
   ),
 );
