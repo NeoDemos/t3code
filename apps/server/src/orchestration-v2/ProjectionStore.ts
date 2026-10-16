@@ -1083,6 +1083,7 @@ type ShellThreadRow = {
   readonly blocking_failure_payload_json: string | null;
   readonly pending_request_payload_json: string | null;
   readonly pending_secret_request_payload_json: string | null;
+  readonly pending_link_request_payload_json: string | null;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
   readonly has_actionable_proposed_plan: number;
@@ -1514,6 +1515,14 @@ function secretRequestAsPendingInput(
   };
 }
 
+/**
+ * A secret card is answered while its agent waits in the run. A link card's
+ * agent asked without waiting, so the card waits on the user after its run.
+ */
+const waitsOnUser = (item: OrchestrationV2TurnItem, liveRunIds: ReadonlySet<RunId>) =>
+  item.type === "link_request" ||
+  (item.type === "secret_request" && item.runId !== null && liveRunIds.has(item.runId));
+
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadShell {
@@ -1551,13 +1560,7 @@ export function threadShellFromProjection(
     pendingRuntimeRequest =
       secretRequestAsPendingInput(
         projection.turnItems
-          .filter(
-            (item) =>
-              (item.type === "secret_request" || item.type === "link_request") &&
-              item.status === "waiting" &&
-              item.runId !== null &&
-              liveRunIds.has(item.runId),
-          )
+          .filter((item) => item.status === "waiting" && waitsOnUser(item, liveRunIds))
           .toSorted(
             (left, right) =>
               DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
@@ -5759,10 +5762,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE r.thread_id = t.thread_id
                   AND r.status IN ('preparing', 'starting', 'running', 'waiting')
                   AND secret.thread_id = t.thread_id AND secret.run_id = r.run_id
-                  AND secret.type IN ('secret_request', 'link_request') AND secret.status = 'waiting'
+                  AND secret.type = 'secret_request' AND secret.status = 'waiting'
                 ORDER BY secret.updated_at DESC, secret.turn_item_id DESC
                 LIMIT 1
               ) AS pending_secret_request_payload_json,
+              (
+                SELECT link.payload_json
+                FROM orchestration_v2_projection_turn_items link
+                  INDEXED BY orchestration_v2_projection_turn_items_waiting_link_idx
+                WHERE link.thread_id = t.thread_id
+                  AND link.type = 'link_request' AND link.status = 'waiting'
+                ORDER BY link.updated_at DESC, link.turn_item_id DESC
+                LIMIT 1
+              ) AS pending_link_request_payload_json,
               (
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
@@ -6039,6 +6051,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 SELECT 1 FROM orchestration_v2_projection_runtime_requests request
                 WHERE request.thread_id = t.thread_id AND request.status = 'pending'
               )
+              AND NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_turn_items link
+                  INDEXED BY orchestration_v2_projection_turn_items_waiting_link_idx
+                WHERE link.thread_id = t.thread_id
+                  AND link.type = 'link_request' AND link.status = 'waiting'
+              )
             ORDER BY t.updated_at ASC, t.thread_id ASC
           `;
             if (rows.length === 0) return [];
@@ -6197,6 +6215,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           pendingTurnItemsByThreadId,
         } = input;
         const thread = yield* decodeThreadPayload(row.payload_json);
+        const waitingCards = [
+          row.pending_secret_request_payload_json === null
+            ? null
+            : yield* decodeTurnItemPayload(row.pending_secret_request_payload_json),
+          row.pending_link_request_payload_json === null
+            ? null
+            : yield* decodeTurnItemPayload(row.pending_link_request_payload_json),
+        ].filter((item) => item !== null);
         let pendingRuntimeRequest =
           row.pending_request_payload_json !== null
             ? pendingRuntimeRequestSummary(
@@ -6205,11 +6231,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             : null;
         if (
           (pendingRuntimeRequest === null || pendingRuntimeRequest.blocking === false) &&
-          row.pending_secret_request_payload_json !== null
+          waitingCards.length > 0
         ) {
           pendingRuntimeRequest =
             secretRequestAsPendingInput(
-              yield* decodeTurnItemPayload(row.pending_secret_request_payload_json),
+              waitingCards.toSorted(
+                (left, right) =>
+                  DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
+              )[0] ?? null,
             ) ?? pendingRuntimeRequest;
         }
         let terminalFailureItem =

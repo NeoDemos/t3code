@@ -181,6 +181,7 @@ const makeLaptop = Effect.gen(function* () {
     requests: Context.get(here, PeerLinkRequests.PeerLinkRequests),
     orchestrator: Context.get(here, Orchestrator.OrchestratorV2),
     sink: Context.get(here, EventSink.EventSinkV2),
+    projections: Context.get(here, ProjectionStore.ProjectionStoreV2),
     sql: Context.get(database, SqlClient.SqlClient),
     call: (args: Record<string, unknown>, callScope = scope) =>
       server
@@ -480,9 +481,18 @@ it.live("the agent asks without waiting, and the user links the box after its tu
         { kind: "user_input" },
       );
 
-      // The agent ends its turn; the card stays answerable.
+      // The agent ends its turn; the card stays answerable, and the thread still asks.
       yield* endRun(a);
       expect(yield* cardOf(a)).toMatchObject({ status: "waiting", linkStatus: "pending" });
+      expect((yield* a.orchestrator.getThreadShell(threadId))?.pendingRuntimeRequest).toMatchObject(
+        { kind: "user_input" },
+      );
+      expect(
+        ProjectionStore.threadShellFromProjection(
+          yield* a.orchestrator.getThreadProjection(threadId),
+        ).pendingRuntimeRequest,
+      ).toMatchObject({ kind: "user_input" });
+      expect(yield* a.projections.getSettlementCandidates(threadId)).toEqual([]);
 
       // The user's client mints a code on the box and picks more than the agent suggested.
       const pairing = yield* b.auth.issuePairingCredential();
