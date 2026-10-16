@@ -18,6 +18,7 @@
  */
 import {
   CommandId,
+  type EnvironmentId,
   MessageId,
   type NodeId,
   type OrchestrationV2Notification,
@@ -35,6 +36,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -111,6 +113,17 @@ const make = Effect.gen(function* () {
         }),
       );
 
+  /**
+   * The stored link to `environmentId`, or nothing once it has expired: an
+   * expired link needs a new pairing code, which only the card asks for.
+   */
+  const usableLink = (environmentId: EnvironmentId) =>
+    Effect.all([peerLinks.get(environmentId), DateTime.now]).pipe(
+      Effect.map(([linked, now]) =>
+        Option.filter(linked, (link) => DateTime.isGreaterThan(link.expiresAt, now)),
+      ),
+    );
+
   const record = (
     card: LinkRequestAsk,
     outcome: LinkRequestOutcome,
@@ -156,14 +169,12 @@ const make = Effect.gen(function* () {
       }
       // A machine already linked needs no card: the agent can use it now.
       if (input.environmentId !== undefined) {
-        const linked = yield* peerLinks
-          .get(input.environmentId)
-          .pipe(
-            Effect.mapError(
-              (error) =>
-                new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
-            ),
-          );
+        const linked = yield* usableLink(input.environmentId).pipe(
+          Effect.mapError(
+            (error) =>
+              new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+          ),
+        );
         if (Option.isSome(linked)) {
           return {
             status: "linked",
@@ -251,14 +262,15 @@ const make = Effect.gen(function* () {
       case "decline":
         return Effect.succeed({ linkStatus: "declined" });
       case "use-existing":
-        return peerLinks.get(answer.environmentId).pipe(
+        return usableLink(answer.environmentId).pipe(
           Effect.flatMap(
             Option.match({
               onNone: () =>
                 Effect.fail(
                   new PeerLinkError({
                     reason: "unknown_link",
-                    message: "That environment is no longer linked here.",
+                    message:
+                      "That environment is no longer linked here, or its link expired. Link it again.",
                   }),
                 ),
               onSome: (linked) => Effect.succeed(linkedOutcome(linked)),

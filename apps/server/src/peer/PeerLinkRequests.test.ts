@@ -16,8 +16,10 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -53,6 +55,7 @@ import * as PeerLinks from "./PeerLinks.ts";
 import {
   descriptorOf,
   layerLinkingEnvironment,
+  linkTo,
   servePeer,
   type ServedPeer,
 } from "./PeerLinks.testkit.ts";
@@ -366,6 +369,26 @@ const errorOf = (result: McpSchema.CallToolResult) => {
   const text = result.content[0];
   return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
 };
+
+/** Runs `effect` a year from now, when every link made today has expired. */
+const afterLinksExpire = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const clock = yield* Clock.Clock;
+    const ahead = Duration.days(365);
+    const later = () => clock.currentTimeMillisUnsafe() + Duration.toMillis(ahead);
+    const laterNanos = () => clock.currentTimeNanosUnsafe() + Duration.toNanosUnsafe(ahead);
+    return yield* effect.pipe(
+      Effect.provideService(Clock.Clock, {
+        currentTimeMillisUnsafe: later,
+        currentTimeMillis: Effect.sync(later),
+        currentTimeNanosUnsafe: laterNanos,
+        currentTimeNanos: Effect.sync(laterNanos),
+        monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+        monotonicTimeNanos: clock.monotonicTimeNanos,
+        sleep: (duration) => clock.sleep(duration),
+      }),
+    );
+  });
 
 const withBoth = <A, E, R>(body: (a: Laptop, b: ServedPeer) => Effect.Effect<A, E, R>) =>
   Effect.scoped(
@@ -697,6 +720,29 @@ it.live("naming a machine that is already linked returns the link at once, with 
       // Not both: the address could name another machine than the id.
       const both = yield* a.call({ environmentId: box.environmentId, url: b.url });
       expect(errorOf(both)).toMatchObject({ code: "invalid_request" });
+    }),
+  ),
+);
+
+it.live("a link that expired goes through the card, so the user can link it again", () =>
+  withBoth((a, b) =>
+    Effect.gen(function* () {
+      yield* seedThread(a);
+      yield* linkTo(a.links, b, "read-only");
+      const asked = yield* a.call({ environmentId: box.environmentId }).pipe(afterLinksExpire);
+      expect(asked.structuredContent).toMatchObject({ status: "pending" });
+      const card = yield* pendingCard(a);
+
+      // Keeping the expired link is no answer: the card fails and says why.
+      yield* a.requests
+        .answer({
+          threadId,
+          turnItemId: card.id,
+          answer: { type: "use-existing", environmentId: box.environmentId },
+        })
+        .pipe(afterLinksExpire);
+      expect(yield* cardOf(a)).toMatchObject({ linkStatus: "failed" });
+      expect((yield* outcomeMessages(a)).messages[0]!.text).toContain("expired");
     }),
   ),
 );
