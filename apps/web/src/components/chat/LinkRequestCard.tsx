@@ -21,8 +21,9 @@ import {
   type OrchestrationV2ProjectedTurnItem,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import { CheckIcon, LinkIcon, MinusIcon, XIcon } from "lucide-react";
-import { useId, useMemo, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { useEnvironmentScope, usePreparedConnection } from "../../state/session";
 import { mintPairingCodeOn } from "../../state/peerPairingCode";
@@ -32,7 +33,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { accessConfig } from "../auth/ConnectAgentSurface";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { LinkAccessPicker } from "../settings/LinkAccessPicker";
-import { Badge } from "../ui/badge";
+import { ANOTHER_ADDRESS, LinkMachineBadge } from "../settings/LinkMachineSelect";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { Input } from "../ui/input";
@@ -41,9 +42,6 @@ import { WizardFooter, WizardHeader, WizardPanel, WizardPopup, WizardSteps } fro
 import { WorkLogRow } from "./WorkLog";
 
 const accessLabel = (access: AuthMcpClientAccess) => accessConfig[access].label;
-
-/** The machine list's row for linking by an address typed in. */
-const ANOTHER_ADDRESS = "another-address";
 
 /** Whether the agent left the machine for the user to pick. */
 const picksMachine = (item: LinkRequestItem) =>
@@ -211,7 +209,7 @@ function LinkRequestDialog(props: {
   const formId = useId();
   const pickMachine = picksMachine(item);
   const listed = useLinkableMachines(props.environmentId, props.open);
-  const machines = useMemo(() => rankMachinesByHint(listed, item.hint), [listed, item.hint]);
+  const machines = rankMachinesByHint(listed, item.hint);
   // Null until the user picks; until then the hint's best match is picked.
   const [choice, setChoice] = useState<string | null>(null);
   const [address, setAddress] = useState(item.url ?? "");
@@ -268,52 +266,52 @@ function LinkRequestDialog(props: {
     reset();
   };
 
+  // Settles to the answer to send, an error to show, or nothing to do.
+  const prepareAnswer = async () => {
+    if (target.kind === "none") return null;
+    if (target.kind === "machine" && target.linked) {
+      return linkRequestAnswerInput(item, {
+        type: "use-existing",
+        environmentId: target.environmentId,
+      });
+    }
+    let code = pairingCode;
+    if (canMint && targetId !== null) {
+      const minted = await mintPairingCodeOn(targetId);
+      if (Result.isFailure(minted)) {
+        setMintFailed((failed) => new Set(failed).add(targetId));
+        setError(linkRequestFailureMessage(minted.failure));
+        return null;
+      }
+      code = minted.success;
+    }
+    return linkRequestAnswerInput(item, {
+      type: "link",
+      target:
+        target.kind === "address"
+          ? { url: address }
+          : { ...target, urls: needsAddress ? [address.trim()] : target.urls },
+      access,
+      pairingCode: code,
+    });
+  };
+
   const submit = async () => {
     if (inFlight.current || target.kind === "none") return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
-    try {
-      let input;
-      if (target.kind === "machine" && target.linked) {
-        input = linkRequestAnswerInput(item, {
-          type: "use-existing",
-          environmentId: target.environmentId,
-        });
-      } else {
-        let code = pairingCode;
-        if (canMint && targetId !== null) {
-          try {
-            code = await mintPairingCodeOn(targetId);
-          } catch (cause) {
-            setMintFailed((failed) => new Set(failed).add(targetId));
-            setError(linkRequestFailureMessage(cause));
-            return;
-          }
-        }
-        input = linkRequestAnswerInput(item, {
-          type: "link",
-          target:
-            target.kind === "address"
-              ? { url: address }
-              : { ...target, urls: needsAddress ? [address.trim()] : target.urls },
-          access,
-          pairingCode: code,
-        });
-      }
-      if (input === null) return;
-      const result = await answer({ environmentId: props.environmentId, input });
-      if (result._tag === "Success") {
-        // The card switches to its answered row once the item updates.
-        close();
-        return;
-      }
-      if (!isAtomCommandInterrupted(result)) {
-        setError(linkRequestFailureMessage(squashAtomCommandFailure(result)));
-      }
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
+    const input = await prepareAnswer();
+    const result =
+      input === null ? null : await answer({ environmentId: props.environmentId, input });
+    inFlight.current = false;
+    setBusy(false);
+    if (result === null) return;
+    if (result._tag === "Success") {
+      // The card switches to its answered row once the item updates.
+      close();
+    } else if (!isAtomCommandInterrupted(result)) {
+      setError(linkRequestFailureMessage(squashAtomCommandFailure(result)));
     }
   };
 
@@ -493,15 +491,7 @@ function MachinePicker(props: {
               className="size-4 shrink-0 text-muted-foreground"
             />
             <span className="min-w-0 flex-1 truncate font-medium">{machine.label}</span>
-            {machine.linked ? (
-              <Badge variant="success" size="sm">
-                Linked
-              </Badge>
-            ) : machine.connected ? null : (
-              <Badge variant="outline" size="sm">
-                Not connected
-              </Badge>
-            )}
+            <LinkMachineBadge machine={machine} />
           </label>
         ))}
         <label className="flex cursor-pointer items-center gap-2.5 rounded-lg border px-3 py-2 text-sm">

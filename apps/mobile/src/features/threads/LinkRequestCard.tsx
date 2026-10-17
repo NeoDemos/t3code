@@ -21,6 +21,7 @@ import {
   type OrchestrationV2ProjectedTurnItem,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import { useMemo, useRef, useState } from "react";
 import { Modal, Platform, Pressable, ScrollView, View, type ColorValue } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -266,52 +267,51 @@ function LinkRequestSheet(props: {
     (useExisting ||
       ((!needsAddress || address.trim().length > 0) && (canMint || pairingCode.trim().length > 0)));
 
+  const prepareAnswer = async () => {
+    if (target.kind === "none") return null;
+    if (target.kind === "machine" && target.linked) {
+      return linkRequestAnswerInput(item, {
+        type: "use-existing",
+        environmentId: target.environmentId,
+      });
+    }
+    let code = pairingCode;
+    if (canMint && targetId !== null) {
+      const minted = await mintPairingCodeOn(targetId);
+      if (Result.isFailure(minted)) {
+        setMintFailed((failed) => new Set(failed).add(targetId));
+        setError(linkRequestFailureMessage(minted.failure));
+        return null;
+      }
+      code = minted.success;
+    }
+    return linkRequestAnswerInput(item, {
+      type: "link",
+      target:
+        target.kind === "address"
+          ? { url: address }
+          : { ...target, urls: needsAddress ? [address.trim()] : target.urls },
+      access,
+      pairingCode: code,
+    });
+  };
+
   const submit = async () => {
     if (inFlight.current || target.kind === "none") return;
     inFlight.current = true;
     setBusy(true);
     setError(null);
-    try {
-      let input;
-      if (target.kind === "machine" && target.linked) {
-        input = linkRequestAnswerInput(item, {
-          type: "use-existing",
-          environmentId: target.environmentId,
-        });
-      } else {
-        let code = pairingCode;
-        if (canMint && targetId !== null) {
-          try {
-            code = await mintPairingCodeOn(targetId);
-          } catch (cause) {
-            setMintFailed((failed) => new Set(failed).add(targetId));
-            setError(linkRequestFailureMessage(cause));
-            return;
-          }
-        }
-        input = linkRequestAnswerInput(item, {
-          type: "link",
-          target:
-            target.kind === "address"
-              ? { url: address }
-              : { ...target, urls: needsAddress ? [address.trim()] : target.urls },
-          access,
-          pairingCode: code,
-        });
-      }
-      if (input === null) return;
-      const result = await answer({ environmentId: props.environmentId, input });
-      if (result._tag === "Success") {
-        setPairingCode("");
-        props.onClose();
-        return;
-      }
-      if (!isAtomCommandInterrupted(result)) {
-        setError(linkRequestFailureMessage(squashAtomCommandFailure(result)));
-      }
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
+    const input = await prepareAnswer();
+    const result =
+      input === null ? null : await answer({ environmentId: props.environmentId, input });
+    inFlight.current = false;
+    setBusy(false);
+    if (result === null) return;
+    if (result._tag === "Success") {
+      setPairingCode("");
+      props.onClose();
+    } else if (!isAtomCommandInterrupted(result)) {
+      setError(linkRequestFailureMessage(squashAtomCommandFailure(result)));
     }
   };
 
@@ -470,7 +470,13 @@ function MachineRow(props: {
   readonly onPress: () => void;
 }) {
   const { machine } = props;
-  const status = machine.linked ? "Linked" : machine.connected ? null : "Not connected";
+  const status = machine.linked
+    ? "Linked"
+    : machine.connected
+      ? null
+      : machine.connectOnly
+        ? "T3 Connect"
+        : "Not connected";
   return (
     <Pressable
       accessibilityRole="radio"
