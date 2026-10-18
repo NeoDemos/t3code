@@ -207,7 +207,7 @@ function LinkEnvironmentAction({ environmentId }: { readonly environmentId: Envi
   // Settles to the code to link with, or null after reporting why there is none.
   const resolvePairingCode = async () => {
     if (!canMint || targetId === null) return pairingCode.trim();
-    const minted = await mintPairingCodeOn(targetId);
+    const minted = await mintPairingCodeOn(targetId, access);
     if (Result.isSuccess(minted)) return minted.success;
     setMintFailed((failed) => new Set(failed).add(targetId));
     failureToast("Could not link the environment", linkRequestFailureMessage(minted.failure));

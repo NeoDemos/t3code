@@ -8168,13 +8168,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
    * waiting long ago, so nobody is woken: stopping or archiving the thread
    * means the user is done with it.
    */
-  const closePendingLinkRequests = (input: {
-    readonly command: OrchestrationV2ServerCommand;
-    readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
-    readonly threadId: ThreadId;
-    readonly now: DateTime.Utc;
-  }) =>
-    Effect.gen(function* () {
+  const closePendingLinkRequests = Effect.fn("orchestrationV2.closePendingLinkRequests")(
+    function* (input: {
+      readonly command: OrchestrationV2ServerCommand;
+      readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+      readonly threadId: ThreadId;
+      readonly now: DateTime.Utc;
+    }) {
       const { turnItems } = yield* projectionStore
         .getThreadRecords(input.threadId, ["turnItems"], {
           turnItemTypes: ["link_request"],
@@ -8202,7 +8202,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         });
       }
-    });
+    },
+  );
 
   const dispatchRuntimeRequestRespond = Effect.fn("Orchestrator.dispatchRuntimeRequestRespond")(
     function* (

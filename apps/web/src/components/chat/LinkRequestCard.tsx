@@ -277,7 +277,7 @@ function LinkRequestDialog(props: {
     }
     let code = pairingCode;
     if (canMint && targetId !== null) {
-      const minted = await mintPairingCodeOn(targetId);
+      const minted = await mintPairingCodeOn(targetId, access);
       if (Result.isFailure(minted)) {
         setMintFailed((failed) => new Set(failed).add(targetId));
         setError(linkRequestFailureMessage(minted.failure));

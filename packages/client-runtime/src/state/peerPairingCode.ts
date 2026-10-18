@@ -1,14 +1,11 @@
 /**
  * A pairing code for linking, minted on the environment being linked to with
  * the user's own session there, so a link card can be answered without the
- * user fetching a code by hand. The code is one-use, carries only what an
- * agent sign-in needs, and goes straight into the link answer.
+ * user fetching a code by hand. The code is one-use, carries exactly what an
+ * agent sign-in with the chosen access needs, and goes straight into the link
+ * answer.
  */
-import {
-  type AuthGrantScope,
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-} from "@t3tools/contracts";
+import { type AuthMcpClientAccess, mcpClientScopes } from "@t3tools/contracts";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import type * as HttpClient from "effect/http/HttpClient";
@@ -26,11 +23,6 @@ import { createEnvironmentCommand } from "./runtime.ts";
 
 const MINT_TIMEOUT_MS = 8_000;
 const PEER_PAIRING_CODE_LABEL = "T3 Code link";
-/** An agent signing in there needs these, whatever access the user picks. */
-const LINK_SCOPES: ReadonlyArray<AuthGrantScope> = [
-  AuthOrchestrationReadScope,
-  AuthOrchestrationOperateScope,
-];
 
 /** Minting failed; the user can still paste a code from the other environment. */
 export class PeerPairingCodeError extends Data.TaggedError("PeerPairingCodeError")<{
@@ -46,6 +38,7 @@ export class PeerPairingCodeError extends Data.TaggedError("PeerPairingCodeError
 
 const mintPeerPairingCode = Effect.fn("clientRuntime.state.mintPeerPairingCode")(function* (
   prepared: PreparedConnection,
+  access: AuthMcpClientAccess,
 ): Effect.fn.Return<string, PeerPairingCodeError, HttpClient.HttpClient> {
   const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
   const remoteAuthorization = yield* Effect.serviceOption(
@@ -62,7 +55,7 @@ const mintPeerPairingCode = Effect.fn("clientRuntime.state.mintPeerPairingCode")
     request: ({ client, headers }) =>
       client.pairingCredential({
         headers,
-        payload: { label: PEER_PAIRING_CODE_LABEL, scopes: LINK_SCOPES },
+        payload: { label: PEER_PAIRING_CODE_LABEL, scopes: mcpClientScopes(access) },
       }),
   }).pipe(
     Effect.mapError(
@@ -89,17 +82,16 @@ export function createPeerPairingCodeCommand<R, E>(
 ) {
   return createEnvironmentCommand(runtime, {
     label: "environment-data:peer-pairing-code:mint",
-    execute: (_input: void) =>
-      Effect.gen(function* () {
-        const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-        const prepared = yield* SubscriptionRef.get(supervisor.prepared);
-        if (Option.isNone(prepared)) {
-          return yield* new PeerPairingCodeError({
-            reason: "unavailable",
-            cause: "The environment is not connected.",
-          });
-        }
-        return yield* mintPeerPairingCode(prepared.value);
-      }),
+    execute: Effect.fn(function* (access: AuthMcpClientAccess) {
+      const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+      const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+      if (Option.isNone(prepared)) {
+        return yield* new PeerPairingCodeError({
+          reason: "unavailable",
+          cause: "The environment is not connected.",
+        });
+      }
+      return yield* mintPeerPairingCode(prepared.value, access);
+    }),
   });
 }
