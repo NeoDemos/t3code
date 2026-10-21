@@ -156,6 +156,13 @@ export function useThreadProjection(ref: ScopedThreadRef | null): EnvironmentThr
   );
 }
 
+/** The thread's projection, held through streamed assistant and reasoning text; see quietThreadAtom. */
+export function useQuietThreadProjection(ref: ScopedThreadRef | null): EnvironmentThread | null {
+  return useAtomValue(
+    ref === null ? EMPTY_THREAD_PROJECTION_ATOM : environmentThreadDetails.quietThreadAtom(ref),
+  );
+}
+
 export function useThreadStatus(ref: ScopedThreadRef | null): EnvironmentThreadStatus {
   return useAtomValue(
     ref === null ? EMPTY_THREAD_STATUS_ATOM : environmentThreadDetails.statusAtom(ref),
@@ -185,6 +192,17 @@ export function useThreadVisibleTurnItems(
     ref === null
       ? EMPTY_VISIBLE_TURN_ITEMS_ATOM
       : environmentThreadDetails.visibleTurnItemsAtom(ref),
+  );
+}
+
+/** Visible turn items, held through streamed text; see quietThreadAtom. */
+export function useQuietThreadVisibleTurnItems(
+  ref: ScopedThreadRef | null,
+): ReadonlyArray<OrchestrationV2ProjectedTurnItem> {
+  return useAtomValue(
+    ref === null
+      ? EMPTY_VISIBLE_TURN_ITEMS_ATOM
+      : environmentThreadDetails.quietVisibleTurnItemsAtom(ref),
   );
 }
 

@@ -26,9 +26,7 @@ import {
   isPaintOnlyThreadTimeline,
   peekHeldThreadTimeline,
   peekRememberedThreadTimeline,
-  rememberReadyThreadTimeline,
   resolveThreadSwitchTimeline,
-  timelineHasEphemeralPreviewUrls,
   recallCheckoutIsRepo,
   rememberCheckoutIsRepo,
 } from "./ChatView.logic";
@@ -235,11 +233,11 @@ import {
   resolveThreadDetailRef,
   useEnvironmentSupportsServerBrowser,
   useProject,
-  useThreadProjection,
+  useQuietThreadProjection,
+  useQuietThreadVisibleTurnItems,
   useThreadStatus,
   useThreadHistory,
   useQuietThreadShell,
-  useThreadVisibleTurnItems,
   useThreadCheckpointSummaries,
 } from "../state/entities";
 import { useEnvironmentShellHasSnapshot } from "../state/shell";
@@ -254,7 +252,8 @@ import {
   RevertConfirmHost,
 } from "./chat/ChatOverlayHosts";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
-import { MessagesTimeline, type MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
+import type { MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
+import { ThreadTimeline } from "./chat/ThreadTimeline";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import {
@@ -461,7 +460,7 @@ export default function ChatView(props: ChatViewProps) {
     shellExists: serverThreadShell !== null,
     waitForShell: draftThread !== null,
   });
-  const serverThreadProjection = useThreadProjection(routeThreadDetailRef);
+  const serverThreadProjection = useQuietThreadProjection(routeThreadDetailRef);
   const serverProjection = serverThreadProjection?.projection ?? null;
   const serverThread =
     serverThreadShell !== null || serverProjection === null
@@ -498,7 +497,7 @@ export default function ChatView(props: ChatViewProps) {
     serverProjection,
     activeProviderThread,
   );
-  const serverVisibleTurnItems = useThreadVisibleTurnItems(routeThreadDetailRef);
+  const serverVisibleTurnItems = useQuietThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
   const threadHistoryControls = (() => {
     if (routeThreadDetailRef === null || !shouldShowLoadEarlierControl(serverThreadHistory)) {
@@ -784,7 +783,7 @@ export default function ChatView(props: ChatViewProps) {
           thread: serverProjection.thread,
           messages: serverProjection.messages,
         });
-  const workflowOpeningParentProjection = useThreadProjection(
+  const workflowOpeningParentProjection = useQuietThreadProjection(
     workflowOpeningParentId === null || parentSubagentEnvironmentId === null
       ? null
       : scopeThreadRef(parentSubagentEnvironmentId, workflowOpeningParentId),
@@ -1457,8 +1456,7 @@ export default function ChatView(props: ChatViewProps) {
           { ...codexFeedbackMessage(submission, "assistant"), runId: null },
         ],
   );
-  const serverTimelineEntries = useIncrementalTimelineEntries(activeThreadKey, {
-    visibleTurnItems: serverVisibleTurnItems,
+  const timelineEntriesInput = {
     optimisticMessages: optimisticUserMessages,
     anchoredMessages: anchoredTimelineMessages,
     attachmentUrlById: timelineAttachmentUrlById,
@@ -1469,6 +1467,12 @@ export default function ChatView(props: ChatViewProps) {
           nodes: serverProjection.nodes,
           plans: serverProjection.plans,
         }),
+  };
+  // Held through streamed text, like serverVisibleTurnItems; ThreadTimeline
+  // derives the rows it renders from the live turn items.
+  const serverTimelineEntries = useIncrementalTimelineEntries(activeThreadKey, {
+    ...timelineEntriesInput,
+    visibleTurnItems: serverVisibleTurnItems,
   });
   const draftTimelineEntries = optimisticUserMessages.map(
     (message) =>
@@ -1638,21 +1642,6 @@ export default function ChatView(props: ChatViewProps) {
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
-  useLayoutEffect(() => {
-    if (
-      threadDetailLoading ||
-      timelineEntries.length === 0 ||
-      timelineHasEphemeralPreviewUrls(timelineEntries)
-    ) {
-      return;
-    }
-    rememberReadyThreadTimeline({
-      threadKey: activeThreadKey,
-      entries: timelineEntries,
-      markdownCwd: gitCwd,
-      workspaceRoot: activeWorkspaceRoot ?? null,
-    });
-  }, [activeThreadKey, activeWorkspaceRoot, gitCwd, threadDetailLoading, timelineEntries]);
   const heldPaintContext = paintOnlyDisplayedTimeline
     ? peekHeldThreadTimeline<typeof timelineEntries>()
     : null;
@@ -3215,7 +3204,6 @@ export default function ChatView(props: ChatViewProps) {
               thread: activeThreadRef,
               enabled:
                 isServerThread && serverConfig?.threadFind === true && !paintOnlyDisplayedTimeline,
-              content: serverProjection ?? undefined,
             }}
             controlsRef={threadFindControlsRef}
             onOpenChange={setIsThreadFindActive}
@@ -3247,7 +3235,15 @@ export default function ChatView(props: ChatViewProps) {
               setThreadErrorBannerDismissTick={setThreadErrorBannerDismissTick}
             />
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
-              <MessagesTimeline
+              <ThreadTimeline
+                threadDetailRef={routeThreadDetailRef}
+                entriesInput={timelineEntriesInput}
+                draftEntries={isServerThread ? null : draftTimelineEntries}
+                activeThreadKey={activeThreadKey}
+                syncing={threadSyncPhase !== null}
+                detailLoading={threadDetailLoading}
+                readyMarkdownCwd={gitCwd}
+                readyWorkspaceRoot={activeWorkspaceRoot ?? null}
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline
@@ -3301,7 +3297,6 @@ export default function ChatView(props: ChatViewProps) {
                   )
                 }
                 listRef={legendListRef}
-                timelineEntries={displayedTimeline.entries}
                 runs={paintOnlyDisplayedTimeline ? [] : (serverProjection?.runs ?? [])}
                 latestRun={paintOnlyDisplayedTimeline ? null : activeActivityRun}
                 runningRunId={paintOnlyDisplayedTimeline ? null : activeRunningTurnId}
