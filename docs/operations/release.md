@@ -51,6 +51,7 @@ the version.
   - stable releases publish npm dist-tag `latest`
   - nightly releases publish npm dist-tag `nightly`
   - preview releases publish npm dist-tag `preview`, which nothing resolves unless asked for by name
+  - these dist-tags are also the release index: the install scripts, `t3 update`, and the mobile update check read each channel's newest version from them, so `npm dist-tag add t3@<version> latest` rolls back new installs and updates too.
   - one-time setup: package `t3` needs a trusted publisher registered for this workflow file (see below).
 - Builds the hosted web app on Vercel while the desktop jobs run, and makes it live only after a release is published:
   - stable releases are aliased to the `latest` hosted app channel

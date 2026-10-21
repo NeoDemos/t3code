@@ -2,9 +2,9 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CLI_RELEASE_BASE_URL_ENV,
   CLI_RELEASE_CHANNELS,
-  cliReleaseIndexPageUrl,
+  CLI_RELEASE_DIST_TAGS_URL,
   cliReleaseChannelOf,
-  newestCliReleaseVersion,
+  cliReleaseVersionFromDistTags,
   type CliReleaseChannel,
 } from "@t3tools/shared/cliRelease";
 import * as Console from "effect/Console";
@@ -16,7 +16,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag, Prompt } from "effect/cli";
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
@@ -44,49 +44,32 @@ export class CliUpdateError extends Schema.TaggedError<CliUpdateError>()("CliUpd
   }
 }
 
-const ReleaseIndex = Schema.Array(
-  Schema.Struct({
-    tag_name: Schema.String,
-    draft: Schema.optional(Schema.Boolean),
-  }),
+const decodeDistTags = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
-const decodeReleaseIndex = Schema.decodeUnknownEffect(Schema.fromJsonString(ReleaseIndex));
 
 const RELEASE_INDEX_TIMEOUT = Duration.seconds(30);
-const RELEASE_INDEX_MAX_PAGES = 10;
 
-export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(function* (
+const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(function* (
   channel: CliReleaseChannel,
 ) {
   const httpClient = yield* HttpClient.HttpClient;
-  const environment = yield* HostProcess.Environment;
-  const githubToken = environment.GH_TOKEN?.trim() || environment.GITHUB_TOKEN?.trim() || undefined;
-  for (let page = 1; page <= RELEASE_INDEX_MAX_PAGES; page += 1) {
-    const request = HttpClientRequest.get(cliReleaseIndexPageUrl(page)).pipe(
-      HttpClientRequest.setHeader("Accept", "application/vnd.github+json"),
-    );
-    const authenticatedRequest =
-      githubToken === undefined
-        ? request
-        : HttpClientRequest.setHeader(request, "Authorization", `Bearer ${githubToken}`);
-    const body = yield* httpClient.execute(authenticatedRequest).pipe(
-      Effect.flatMap(HttpClientResponse.filterStatusOk),
-      Effect.flatMap((response) => response.text),
-      Effect.mapError(() => new CliUpdateError({ reason: "Could not list t3 releases." })),
-      Effect.timeoutOrElse({
-        duration: RELEASE_INDEX_TIMEOUT,
-        orElse: () => Effect.fail(new CliUpdateError({ reason: "Timed out listing t3 releases." })),
-      }),
-    );
-    const releases = yield* decodeReleaseIndex(body).pipe(
-      Effect.mapError(
-        () => new CliUpdateError({ reason: "The t3 release index had an unexpected shape." }),
-      ),
-    );
-    const version = newestCliReleaseVersion(releases, channel);
-    if (version !== undefined) return version;
-    if (releases.length === 0) break;
-  }
+  const body = yield* httpClient.get(CLI_RELEASE_DIST_TAGS_URL).pipe(
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.flatMap((response) => response.text),
+    Effect.mapError(() => new CliUpdateError({ reason: "Could not list t3 releases." })),
+    Effect.timeoutOrElse({
+      duration: RELEASE_INDEX_TIMEOUT,
+      orElse: () => Effect.fail(new CliUpdateError({ reason: "Timed out listing t3 releases." })),
+    }),
+  );
+  const distTags = yield* decodeDistTags(body).pipe(
+    Effect.mapError(
+      () => new CliUpdateError({ reason: "The t3 release index had an unexpected shape." }),
+    ),
+  );
+  const version = cliReleaseVersionFromDistTags(distTags, channel);
+  if (version !== undefined) return version;
   return yield* new CliUpdateError({ reason: `No published ${channel} release was found.` });
 });
 

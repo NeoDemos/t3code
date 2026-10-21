@@ -130,19 +130,20 @@ $arch = switch ($rawArch) {
 $channel = if ($env:T3CODE_CHANNEL) { $env:T3CODE_CHANNEL } else { "stable" }
 $version = $env:T3CODE_VERSION
 if (-not $version) {
-  # Tags are v<semver>; the channel is the prerelease identifier, or none for
-  # stable. Only tags of the requested train are considered, so a stable
-  # install can never pick up a nightly or preview build by accident.
-  $tagPattern = switch ($channel) {
-    "stable" { '^v\d+\.\d+\.\d+$' }
-    "nightly" { '^v\d+\.\d+\.\d+-nightly\.\d+\.\d+$' }
-    "preview" { '^v\d+\.\d+\.\d+-preview\.\d+\.\d+$' }
+  # The npm dist-tags name each channel's newest release; release.yml moves a
+  # tag only after its GitHub release exists. The version must still match the
+  # requested train, so a stable install can never pick up a nightly or preview
+  # build by accident.
+  $versionPattern = switch ($channel) {
+    "stable" { '^\d+\.\d+\.\d+$' }
+    "nightly" { '^\d+\.\d+\.\d+-nightly\.\d+\.\d+$' }
+    "preview" { '^\d+\.\d+\.\d+-preview\.\d+\.\d+$' }
     default { Fail "T3CODE_CHANNEL must be stable, nightly, or preview" }
   }
-  $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=100" -Headers @{ "User-Agent" = "t3-install" }
-  $tag = ($releases | Where-Object { -not $_.draft -and $_.tag_name -match $tagPattern } | Select-Object -First 1).tag_name
-  if (-not $tag) { Fail "could not find a $channel release; set T3CODE_VERSION" }
-  $version = $tag.Substring(1)
+  $distTag = if ($channel -eq "stable") { "latest" } else { $channel }
+  $distTags = Invoke-RestMethod -Uri "https://registry.npmjs.org/-/package/t3/dist-tags" -Headers @{ "User-Agent" = "t3-install" }
+  $version = $distTags.$distTag
+  if (-not ($version -match $versionPattern)) { Fail "could not find a $channel release; set T3CODE_VERSION" }
 }
 if ($version -match '-preview\.') {
   Write-Warning "t3 $version is a preview build. Preview builds are cut by maintainers from unreleased branches to exercise the release pipeline. They can be broken, receive no fixes, and are never offered as updates. Set T3CODE_CHANNEL=stable (the default) for a supported build."

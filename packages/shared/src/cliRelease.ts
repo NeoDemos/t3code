@@ -1,5 +1,4 @@
 const CLI_RELEASE_REPOSITORY = "pingdotgg/t3code";
-export const CLI_RELEASES_PAGE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 
@@ -79,28 +78,29 @@ export function cliReleaseChannelOf(version: string): CliReleaseChannel {
 }
 
 /**
- * Callers walk pages until a channel match turns up; a busy nightly train can push the newest
- * preview or stable release past any single page.
+ * release.yml moves a channel's dist-tag only after that version's GitHub release exists, so the
+ * tags are the index of each channel's newest release. Moving one by hand moves every installer.
  */
-export function cliReleaseIndexPageUrl(page: number): string {
-  return `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases?per_page=100&page=${page}`;
-}
+export const CLI_RELEASE_DIST_TAGS_URL = "https://registry.npmjs.org/-/package/t3/dist-tags";
+
+const CLI_RELEASE_DIST_TAG = {
+  stable: "latest",
+  nightly: "nightly",
+  preview: "preview",
+} satisfies Record<CliReleaseChannel, string>;
 
 /**
- * Drafts are skipped because their assets are not downloadable.
+ * A tag that points at another channel's build is ignored, so a mistyped
+ * `npm dist-tag add` cannot move stable installs onto a nightly.
  */
-export function newestCliReleaseVersion(
-  releases: ReadonlyArray<{
-    readonly tag_name: string;
-    readonly draft?: boolean | undefined;
-  }>,
+export function cliReleaseVersionFromDistTags(
+  distTags: Readonly<Record<string, string>>,
   channel: CliReleaseChannel,
 ): string | undefined {
-  for (const release of releases) {
-    if (release.draft) continue;
-    const version = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(release.tag_name)?.[1];
-    if (version === undefined) continue;
-    if (cliReleaseChannelOf(version) === channel) return version;
-  }
-  return undefined;
+  const version = distTags[CLI_RELEASE_DIST_TAG[channel]];
+  return version !== undefined &&
+    /^\d+\.\d+\.\d+(?:-(?:nightly|preview)\.\d{8}\.\d+)?$/.test(version) &&
+    cliReleaseChannelOf(version) === channel
+    ? version
+    : undefined;
 }
