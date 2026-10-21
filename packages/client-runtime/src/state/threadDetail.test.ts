@@ -78,6 +78,16 @@ describe("sameThreadStructure", () => {
     expect(sameThreadStructure(before, next)).toBe(false);
   });
 
+  it("holds through a visit mark", () => {
+    const thread = { ...before.thread, lastVisitedAt: later, updatedAt: later };
+    expect(sameThreadStructure(before, { ...before, thread })).toBe(true);
+  });
+
+  it("sees other thread changes", () => {
+    const thread = { ...before.thread, title: "Renamed" };
+    expect(sameThreadStructure(before, { ...before, thread })).toBe(false);
+  });
+
   it("sees changes outside the turn items", () => {
     expect(sameThreadStructure(before, { ...before, runs: [] })).toBe(false);
   });
@@ -125,6 +135,8 @@ describe("quietThreadAtom", () => {
     const thread = setup(withItem(assistant));
     const projection = thread.read()?.projection;
     expect(projection).not.toHaveProperty("updatedAt");
+    expect(projection?.thread).not.toHaveProperty("updatedAt");
+    expect(projection?.thread).not.toHaveProperty("lastVisitedAt");
     expect(projection?.turnItems[0]).not.toHaveProperty("text");
     expect(projection?.turnItems[0]).not.toHaveProperty("updatedAt");
     expect(projection?.visibleTurnItems[0]?.item).not.toHaveProperty("text");
