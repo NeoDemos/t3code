@@ -1436,7 +1436,7 @@ function renderFeedEntry(
                 environmentId={props.environmentId}
                 senderThreadId={message.senderThreadId}
                 summary={
-                  presentation.text
+                  replaceComposerContextReferences(presentation.text, (ref) => ref.label)
                     .split(/\r?\n/)
                     .find((line) => line.trim().length > 0)
                     ?.trim() ?? ""

@@ -302,16 +302,23 @@ describe("MessagesTimeline agent messages", () => {
 
   it("reveals a find match inside a folded agent message", async () => {
     setup();
+    const text = `${"Checked the next file.\n\n".repeat(16)}The migration drops the index.`;
     await using screen = await renderTimeline(
-      [message(AGENT_MESSAGE, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID })],
+      [message(text, { createdBy: "agent", senderThreadId: SENDER_THREAD_ID })],
       {
         findExpanded: true,
-        findQuery: "backfilling",
+        findQuery: "drops the index",
         activeFindMatch: { entryId: "entry-message-1", runId: null, occurrence: 0 },
       },
     );
     await vi.waitFor(() =>
       expect(screen.button(/^Agent/).getAttribute("aria-expanded")).toBe("true"),
+    );
+    const { range } = collectThreadFindRanges(screen.container, "drops the index")[0]!;
+    const body = screen.container.querySelector("[data-user-message-body]")!;
+    expect(range.getBoundingClientRect().height).toBeGreaterThan(0);
+    expect(range.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      body.getBoundingClientRect().bottom,
     );
   });
 });
