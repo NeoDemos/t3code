@@ -114,21 +114,27 @@ const readRuntimeStateModel = Effect.fn("mistralVibeUsage.readRuntimeStateModel"
   return text(object(object(runtimeState).session_metadata).active_model);
 });
 
+type SessionReadResult =
+  | {
+      readonly kind: "usage";
+      readonly projectionPath: string;
+      readonly reading: SessionUsageReading;
+      readonly model: string;
+    }
+  // A readable session with no usage yet (a fresh session before its first
+  // turn completes).
+  | { readonly kind: "empty" }
+  // Session data exists but could not be read, so its usage is missing.
+  | { readonly kind: "unreadable" };
+
 const readSessionDirectory = Effect.fn("mistralVibeUsage.readSessionDirectory")(function* (
   sessionDir: string,
   catalogEntry: SessionUsageReading | undefined,
-): Effect.fn.Return<
-  {
-    readonly projectionPath: string;
-    readonly reading: SessionUsageReading;
-    readonly model: string;
-  } | null,
-  never,
-  FileSystem.FileSystem | Path.Path
-> {
+): Effect.fn.Return<SessionReadResult | null, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const info = yield* fileSystem.stat(sessionDir).pipe(Effect.orElseSucceed(() => null));
+  // Names that are not directories (stray files) are not sessions.
   if (info?.type !== "Directory") return null;
   const generationsDir = path.join(sessionDir, "generations");
   const generationNames = yield* fileSystem.readDirectory(generationsDir).pipe(
@@ -143,21 +149,28 @@ const readSessionDirectory = Effect.fn("mistralVibeUsage.readSessionDirectory")(
     currentGeneration !== null && generationNames.includes(currentGeneration)
       ? currentGeneration
       : (generationNames.at(-1) ?? null);
-  if (generation === null) return null;
+  if (generation === null) return { kind: "unreadable" };
   const generationDir = path.join(generationsDir, generation);
-  const projection = yield* readJsonFile(path.join(generationDir, "projection-state.json"));
+  const projectionPath = path.join(generationDir, "projection-state.json");
+  const projection = yield* readJsonFile(projectionPath);
   const session = object(object(object(projection).snapshot).session);
   const published = readingFromTokenUsage(session.tokenUsage, session.updatedAt, null);
-  if (published === null) return null;
+  // The catalog is journal-backed, so it can carry usable totals even when the
+  // published projection is empty or unreadable; skip only when both are gone.
   const reading =
-    catalogEntry !== undefined && catalogEntry.updatedAt > published.updatedAt
+    published === null
       ? catalogEntry
-      : published;
+      : catalogEntry !== undefined && catalogEntry.updatedAt > published.updatedAt
+        ? catalogEntry
+        : published;
+  if (reading === undefined) {
+    return projection === null ? { kind: "unreadable" } : { kind: "empty" };
+  }
   // The active model is fixed for a session's lifetime, so the catalog's copy
   // is authoritative even when its usage reading lost the freshness race.
   const model =
     catalogEntry?.model ?? (yield* readRuntimeStateModel(generationDir)) ?? UNKNOWN_MODEL;
-  return { projectionPath: path.join(generationDir, "projection-state.json"), reading, model };
+  return { kind: "usage", projectionPath, reading, model };
 });
 
 function toUsageRecord(
@@ -215,10 +228,11 @@ const scanSessionRoot = Effect.fn("mistralVibeUsage.scanSessionRoot")(function* 
     .pipe(Effect.catchCause(() => Effect.succeed(false)));
   if (!exists) return { dir: root, files: null };
   const catalog = parseSessionCatalog(yield* readJsonFile(path.join(root, ".session-index.json")));
-  const names = yield* fileSystem
-    .readDirectory(root)
-    .pipe(Effect.orElseSucceed(() => [] as string[]));
-  const sessionNames = names.filter((name) => !name.startsWith(".")).sort();
+  const directory = yield* fileSystem.readDirectory(root).pipe(
+    Effect.map((names) => ({ names, failed: false as const })),
+    Effect.orElseSucceed(() => ({ names: [] as string[], failed: true as const })),
+  );
+  const sessionNames = directory.names.filter((name) => !name.startsWith(".")).sort();
   const results = yield* Effect.forEach(
     sessionNames,
     (name) =>
@@ -229,15 +243,27 @@ const scanSessionRoot = Effect.fn("mistralVibeUsage.scanSessionRoot")(function* 
     { concurrency: SESSION_READ_CONCURRENCY },
   );
   const files: { path: string; records: UsageRecord[] }[] = [];
+  let unreadable = 0;
   for (const { name, result } of results) {
-    if (result === null || result.reading.updatedAt < windowStartMs) continue;
+    if (result === null || result.kind === "empty") continue;
+    if (result.kind === "unreadable") {
+      unreadable += 1;
+      continue;
+    }
+    if (result.reading.updatedAt < windowStartMs) continue;
     files.push({
       path: result.projectionPath,
       records: [toUsageRecord(name, root, result.reading, result.model)],
     });
   }
   files.sort((left, right) => left.path.localeCompare(right.path));
-  return { dir: root, files, status: "ok" };
+  const incomplete = directory.failed || unreadable > 0;
+  return {
+    dir: root,
+    files,
+    status: incomplete ? ("partial" as const) : ("ok" as const),
+    ...(incomplete ? { message: "Some Mistral Vibe sessions could not be read." } : {}),
+  };
 });
 
 export type MistralVibeUsageReaderEnv = FileSystem.FileSystem | Path.Path;
