@@ -418,12 +418,84 @@ describe("mistralVibeUsageReader", () => {
           },
         ],
       });
-      assert.strictEqual(sources[0]?.status, "ok");
+      // The unreadable session is reported, not silently dropped.
+      assert.strictEqual(sources[0]?.status, "partial");
       const records = sources[0]?.files?.flatMap((file) => file.records) ?? [];
       assert.deepStrictEqual(
         records.map((record) => record.sessionId),
         [SESSION_ID],
       );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("falls back to the catalog when the published projection has no usable usage", () =>
+    Effect.gen(function* () {
+      const { vibeHome, unifiedRoot } = yield* makeVibeHome();
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // An empty projection (a fresh session before its first turn) with the
+      // recovered reading only in the catalog.
+      yield* writeSession(unifiedRoot, SESSION_ID, {
+        tokenUsage: { cachedInputTokens: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        updatedAt: UPDATED_AT,
+        model: null,
+      });
+      // A corrupt projection with the recovered reading only in the catalog.
+      const brokenDir = path.join(unifiedRoot, OTHER_SESSION_ID, "generations", "0000000000000001");
+      yield* fileSystem.makeDirectory(brokenDir, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(unifiedRoot, OTHER_SESSION_ID, "CURRENT"),
+        JSON.stringify({ generation: "0000000000000001", session_id: OTHER_SESSION_ID }),
+      );
+      yield* fileSystem.writeFileString(path.join(brokenDir, "projection-state.json"), "{invalid");
+      yield* writeCatalog(unifiedRoot, [
+        {
+          sessionId: SESSION_ID,
+          fixture: {
+            tokenUsage: {
+              cachedInputTokens: 10,
+              inputTokens: 100,
+              outputTokens: 5,
+              totalTokens: 105,
+            },
+            updatedAt: UPDATED_AT + 1_000,
+            model: "mistral-large-4",
+          },
+        },
+        {
+          sessionId: OTHER_SESSION_ID,
+          fixture: {
+            tokenUsage: {
+              cachedInputTokens: 20,
+              inputTokens: 200,
+              outputTokens: 7,
+              totalTokens: 207,
+            },
+            updatedAt: UPDATED_AT + 2_000,
+            model: "glm-5-3",
+          },
+        },
+      ]);
+      const sources = yield* scan({
+        instances: [
+          {
+            id: "acpRegistry_mistral_vibe",
+            config: decodeSettings({ agentId: "mistral-vibe" }),
+            environment: { VIBE_HOME: vibeHome },
+          },
+        ],
+      });
+      // Both sessions recovered from the catalog, so the scan is complete.
+      assert.strictEqual(sources[0]?.status, "ok");
+      const records = sources[0]?.files?.flatMap((file) => file.records) ?? [];
+      assert.strictEqual(records.length, 2);
+      const bySession = new Map(records.map((record) => [record.sessionId, record]));
+      assert.strictEqual(bySession.get(SESSION_ID)?.model, "mistral-large-4");
+      assert.strictEqual(bySession.get(SESSION_ID)?.timestampMs, UPDATED_AT + 1_000);
+      assert.strictEqual(bySession.get(SESSION_ID)?.totals.uncachedInputTokens, 90);
+      assert.strictEqual(bySession.get(OTHER_SESSION_ID)?.model, "glm-5-3");
+      assert.strictEqual(bySession.get(OTHER_SESSION_ID)?.timestampMs, UPDATED_AT + 2_000);
+      assert.strictEqual(bySession.get(OTHER_SESSION_ID)?.totals.uncachedInputTokens, 180);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
