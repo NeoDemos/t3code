@@ -17,7 +17,13 @@ import {
   deriveThreadCheckpointSummaries,
   type ThreadCheckpointSummary,
 } from "./threadCheckpoints.ts";
-import type { EnvironmentThread } from "./models.ts";
+import type {
+  EnvironmentThread,
+  EnvironmentThreadStructure,
+  ThreadStructure,
+  ThreadStructureTurnItem,
+  ThreadStructureVisibleTurnItem,
+} from "./models.ts";
 import { EMPTY_ENVIRONMENT_THREAD_STATE, type EnvironmentThreadState } from "./threadState.ts";
 import {
   createQuestionHistoryProjector,
@@ -29,31 +35,78 @@ import { arrayElementsEqual, parseThreadKey, threadKey } from "./entities.ts";
 const EMPTY_VISIBLE_TURN_ITEMS: OrchestrationV2ThreadProjection["visibleTurnItems"] = Object.freeze(
   [],
 );
+const EMPTY_THREAD_STRUCTURE_TURN_ITEMS: ReadonlyArray<ThreadStructureVisibleTurnItem> =
+  Object.freeze([]);
 const EMPTY_CHECKPOINT_SUMMARIES: ReadonlyArray<ThreadCheckpointSummary> = Object.freeze([]);
+
+type TurnItem = OrchestrationV2ThreadProjection["turnItems"][number];
+type VisibleTurnItem = OrchestrationV2ThreadProjection["visibleTurnItems"][number];
+
+// Items are stripped once each: unchanged items keep their identity across
+// structure changes, which the incremental timeline relies on.
+const structureTurnItems = new WeakMap<TurnItem, ThreadStructureTurnItem>();
+const structureVisibleTurnItems = new WeakMap<VisibleTurnItem, ThreadStructureVisibleTurnItem>();
+
+export function toThreadStructureTurnItem(item: TurnItem): ThreadStructureTurnItem {
+  if (item.type !== "assistant_message" && item.type !== "reasoning") return item;
+  let structure = structureTurnItems.get(item);
+  if (structure === undefined) {
+    const { text: _text, updatedAt: _updatedAt, ...rest } = item;
+    structure = rest;
+    structureTurnItems.set(item, structure);
+  }
+  return structure;
+}
+
+function toThreadStructureVisibleTurnItem(
+  visibleItem: VisibleTurnItem,
+): ThreadStructureVisibleTurnItem {
+  const item = toThreadStructureTurnItem(visibleItem.item);
+  if (item === visibleItem.item) return visibleItem;
+  let structure = structureVisibleTurnItems.get(visibleItem);
+  if (structure === undefined) {
+    structure = { ...visibleItem, item };
+    structureVisibleTurnItems.set(visibleItem, structure);
+  }
+  return structure;
+}
+
+/** Whether the structure kept every field of this row: true for all but streamed items. */
+export function isCompleteTurnItemRow(row: ThreadStructureVisibleTurnItem): row is VisibleTurnItem {
+  return row.item.type !== "assistant_message" && row.item.type !== "reasoning";
+}
+
+export function toThreadStructure(projection: OrchestrationV2ThreadProjection): ThreadStructure {
+  const { updatedAt: _updatedAt, ...structure } = projection;
+  return {
+    ...structure,
+    turnItems: projection.turnItems.map(toThreadStructureTurnItem),
+    visibleTurnItems: projection.visibleTurnItems.map(toThreadStructureVisibleTurnItem),
+  };
+}
 
 const sameTurnItem = Schema.toEquivalence(OrchestrationV2TurnItem);
 
-function sameApartFromStreamedText(
-  previous: OrchestrationV2TurnItem,
-  next: OrchestrationV2TurnItem,
-): boolean {
+// Compares through toThreadStructureTurnItem, so the fields it strips are
+// exactly the ones ignored here.
+function sameTurnItemStructure(previous: TurnItem, next: TurnItem): boolean {
   if (previous === next) return true;
-  if (
-    previous.id !== next.id ||
-    (previous.type !== "assistant_message" && previous.type !== "reasoning") ||
-    previous.type !== next.type
-  ) {
+  const structure = toThreadStructureTurnItem(previous);
+  if (previous.id !== next.id || previous.type !== next.type || structure === previous) {
     return false;
   }
-  return sameTurnItem({ ...previous, text: next.text, updatedAt: next.updatedAt }, next);
+  return (
+    Object.keys(previous).length === Object.keys(next).length &&
+    sameTurnItem(Object.assign({}, next, structure), next)
+  );
 }
 
 /**
- * Whether `next` differs from `previous` only by text streamed into existing
- * assistant and reasoning items: the same items exist, with the same status,
- * and every other projection field is unchanged.
+ * Whether `previous` and `next` have the same ThreadStructure: they differ
+ * only by text streamed into existing assistant and reasoning items. The same
+ * items exist, with the same status, and every other field is unchanged.
  */
-export function onlyStreamedTextChanged(
+export function sameThreadStructure(
   previous: OrchestrationV2ThreadProjection,
   next: OrchestrationV2ThreadProjection,
 ): boolean {
@@ -69,7 +122,7 @@ export function onlyStreamedTextChanged(
     return false;
   }
   for (let index = 0; index < next.turnItems.length; index += 1) {
-    if (!sameApartFromStreamedText(previous.turnItems[index]!, next.turnItems[index]!)) {
+    if (!sameTurnItemStructure(previous.turnItems[index]!, next.turnItems[index]!)) {
       return false;
     }
   }
@@ -82,7 +135,7 @@ export function onlyStreamedTextChanged(
       before.visibility !== after.visibility ||
       before.sourceThreadId !== after.sourceThreadId ||
       before.sourceItemId !== after.sourceItemId ||
-      !sameApartFromStreamedText(before.item, after.item)
+      !sameTurnItemStructure(before.item, after.item)
     ) {
       return false;
     }
@@ -121,21 +174,27 @@ export function createEnvironmentThreadDetailAtoms<E>(
 
   // Streamed assistant and reasoning text replaces an item several times a
   // second. Readers of the thread's structure (runs, requests, which items
-  // exist and their status) keep the previous value through those updates;
-  // whatever shows the text reads threadAtom or visibleTurnItemsAtom.
+  // exist and their status) keep the previous value through those updates.
   const quietThreadAtomFamily = Atom.family((key: string) => {
-    let previous: EnvironmentThread | null = null;
+    let previousProjection: OrchestrationV2ThreadProjection | null = null;
+    let previous: EnvironmentThreadStructure | null = null;
     return Atom.make((get) => {
       const next = get(threadAtomFamily(key));
-      if (
-        previous !== null &&
-        next !== null &&
-        onlyStreamedTextChanged(previous.projection, next.projection)
+      if (next === null) {
+        previousProjection = null;
+        previous = null;
+      } else if (
+        previousProjection === null ||
+        !sameThreadStructure(previousProjection, next.projection)
       ) {
-        return previous;
+        previous = {
+          environmentId: next.environmentId,
+          projection: toThreadStructure(next.projection),
+        };
       }
-      previous = next;
-      return next;
+      // Compared against the latest projection, a delta only compares the item it replaced.
+      previousProjection = next?.projection ?? null;
+      return previous;
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-quiet-thread:${key}`));
   });
 
@@ -148,10 +207,12 @@ export function createEnvironmentThreadDetailAtoms<E>(
   });
 
   const quietVisibleTurnItemsAtomFamily = Atom.family((key: string) => {
-    const projectQuestionHistory = createQuestionHistoryProjector();
-    return Atom.make((get): OrchestrationV2ThreadProjection["visibleTurnItems"] => {
+    const projectQuestionHistory = createQuestionHistoryProjector<ThreadStructureVisibleTurnItem>();
+    return Atom.make((get) => {
       const thread = get(quietThreadAtomFamily(key));
-      return thread === null ? EMPTY_VISIBLE_TURN_ITEMS : projectQuestionHistory(thread.projection);
+      return thread === null
+        ? EMPTY_THREAD_STRUCTURE_TURN_ITEMS
+        : projectQuestionHistory(thread.projection);
     }).pipe(
       Atom.setIdleTTL(0),
       Atom.withLabel(`environment-quiet-thread-visible-turn-items:${key}`),
@@ -243,6 +304,11 @@ export function createEnvironmentThreadDetailAtoms<E>(
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-checkpoint-summaries:${key}`));
   });
 
+  const updatedAtAtomFamily = Atom.family((key: string) =>
+    Atom.make(
+      (get) => Option.getOrNull(get(threadStateValueAtomFamily(key)).data)?.updatedAt ?? null,
+    ).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-updated-at:${key}`)),
+  );
   const worktreePathAtomFamily = Atom.family((key: string) =>
     Atom.make(
       (get) =>
@@ -305,6 +371,7 @@ export function createEnvironmentThreadDetailAtoms<E>(
 
   return {
     worktreePathAtom: (ref: ScopedThreadRef) => worktreePathAtomFamily(threadKey(ref)),
+    updatedAtAtom: (ref: ScopedThreadRef) => updatedAtAtomFamily(threadKey(ref)),
     pendingRequestsAtom: (ref: ScopedThreadRef) => pendingRequestsAtomFamily(threadKey(ref)),
     queueWorkflowAtom: (ref: ScopedThreadRef) => queueWorkflowAtomFamily(threadKey(ref)),
     queuedCountAtom: (ref: ScopedThreadRef) => queuedCountAtomFamily(threadKey(ref)),

@@ -1,8 +1,11 @@
+import type * as DateTime from "effect/DateTime";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentProject,
   EnvironmentThread,
   EnvironmentThreadShell,
+  EnvironmentThreadStructure,
+  ThreadStructureVisibleTurnItem,
 } from "@t3tools/client-runtime/state/shell";
 import {
   EMPTY_THREAD_HISTORY_META,
@@ -62,6 +65,9 @@ const EMPTY_VISIBLE_TURN_ITEMS_ATOM = Atom.make(EMPTY_VISIBLE_TURN_ITEMS).pipe(
 const EMPTY_CHECKPOINT_SUMMARIES_ATOM = Atom.make<ReadonlyArray<ThreadCheckpointSummary>>(
   Object.freeze([]),
 ).pipe(Atom.withLabel("web-thread-checkpoint-summaries:empty"));
+const EMPTY_UPDATED_AT_ATOM = Atom.make<DateTime.Utc | null>(null).pipe(
+  Atom.withLabel("web-thread-updated-at:empty"),
+);
 const EMPTY_THREAD_HISTORY_ATOM = Atom.make<ThreadHistoryMeta>(EMPTY_THREAD_HISTORY_META).pipe(
   Atom.withLabel("web-thread-history:empty"),
 );
@@ -156,10 +162,19 @@ export function useThreadProjection(ref: ScopedThreadRef | null): EnvironmentThr
   );
 }
 
-/** The thread's projection, held through streamed assistant and reasoning text; see quietThreadAtom. */
-export function useQuietThreadProjection(ref: ScopedThreadRef | null): EnvironmentThread | null {
+/** The thread's structure, held through streamed assistant and reasoning text; see ThreadStructure. */
+export function useQuietThreadProjection(
+  ref: ScopedThreadRef | null,
+): EnvironmentThreadStructure | null {
   return useAtomValue(
     ref === null ? EMPTY_THREAD_PROJECTION_ATOM : environmentThreadDetails.quietThreadAtom(ref),
+  );
+}
+
+/** The detail's live `updatedAt`, which the thread structure leaves out. */
+export function useThreadUpdatedAt(ref: ScopedThreadRef | null): DateTime.Utc | null {
+  return useAtomValue(
+    ref === null ? EMPTY_UPDATED_AT_ATOM : environmentThreadDetails.updatedAtAtom(ref),
   );
 }
 
@@ -195,10 +210,10 @@ export function useThreadVisibleTurnItems(
   );
 }
 
-/** Visible turn items, held through streamed text; see quietThreadAtom. */
+/** Visible turn items without their streamed text; see ThreadStructure. */
 export function useQuietThreadVisibleTurnItems(
   ref: ScopedThreadRef | null,
-): ReadonlyArray<OrchestrationV2ProjectedTurnItem> {
+): ReadonlyArray<ThreadStructureVisibleTurnItem> {
   return useAtomValue(
     ref === null
       ? EMPTY_VISIBLE_TURN_ITEMS_ATOM
