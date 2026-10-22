@@ -47,7 +47,7 @@ type VisibleTurnItem = OrchestrationV2ThreadProjection["visibleTurnItems"][numbe
 const structureTurnItems = new WeakMap<TurnItem, ThreadStructureTurnItem>();
 const structureVisibleTurnItems = new WeakMap<VisibleTurnItem, ThreadStructureVisibleTurnItem>();
 
-export function toThreadStructureTurnItem(item: TurnItem): ThreadStructureTurnItem {
+function toThreadStructureTurnItem(item: TurnItem): ThreadStructureTurnItem {
   if (item.type !== "assistant_message" && item.type !== "reasoning") return item;
   let structure = structureTurnItems.get(item);
   if (structure === undefined) {
@@ -76,7 +76,7 @@ export function isCompleteTurnItemRow(row: ThreadStructureVisibleTurnItem): row 
   return row.item.type !== "assistant_message" && row.item.type !== "reasoning";
 }
 
-export function toThreadStructure(projection: OrchestrationV2ThreadProjection): ThreadStructure {
+function toThreadStructure(projection: OrchestrationV2ThreadProjection): ThreadStructure {
   const { updatedAt: _updatedAt, ...structure } = projection;
   return {
     ...structure,
