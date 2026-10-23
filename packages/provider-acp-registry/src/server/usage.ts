@@ -90,7 +90,7 @@ const readJsonFile = Effect.fnUntraced(function* (
 // newer journal-backed totals, so the caller needs to know it failed. A
 // missing catalog is not a failure: Vibe only writes it when it lists
 // sessions, and the published generations remain the primary source.
-const readCatalogJsonFile = Effect.fnUntraced(function* (
+const readCatalogJsonFile = Effect.fn("mistralVibeUsage.readCatalogJsonFile")(function* (
   filePath: string,
 ): Effect.fn.Return<{ value: unknown; failed: boolean }, never, FileSystem.FileSystem> {
   const fileSystem = yield* FileSystem.FileSystem;
