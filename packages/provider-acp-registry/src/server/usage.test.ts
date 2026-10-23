@@ -498,4 +498,96 @@ describe("mistralVibeUsageReader", () => {
       assert.strictEqual(bySession.get(OTHER_SESSION_ID)?.totals.uncachedInputTokens, 180);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("marks catalog read failures as partial scans", () =>
+    Effect.gen(function* () {
+      const { vibeHome, unifiedRoot } = yield* makeVibeHome();
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* writeSession(unifiedRoot, SESSION_ID, {
+        tokenUsage: { cachedInputTokens: 0, inputTokens: 10, outputTokens: 1, totalTokens: 11 },
+        updatedAt: UPDATED_AT,
+        model: "mistral-large-4",
+      });
+      // A corrupt catalog can hide newer journal-backed totals; the scan must
+      // say so instead of reporting ok.
+      yield* fileSystem.writeFileString(path.join(unifiedRoot, ".session-index.json"), "{invalid");
+      const sources = yield* scan({
+        instances: [
+          {
+            id: "acpRegistry_mistral_vibe",
+            config: decodeSettings({ agentId: "mistral-vibe" }),
+            environment: { VIBE_HOME: vibeHome },
+          },
+        ],
+      });
+      assert.strictEqual(sources[0]?.status, "partial");
+      const records = sources[0]?.files?.flatMap((file) => file.records) ?? [];
+      assert.deepStrictEqual(
+        records.map((record) => record.sessionId),
+        [SESSION_ID],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("counts sessions that cannot be stat'ed as unreadable", () =>
+    Effect.gen(function* () {
+      const { vibeHome, unifiedRoot } = yield* makeVibeHome();
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* writeSession(unifiedRoot, SESSION_ID, {
+        tokenUsage: { cachedInputTokens: 0, inputTokens: 10, outputTokens: 1, totalTokens: 11 },
+        updatedAt: UPDATED_AT,
+        model: "mistral-large-4",
+      });
+      // A dangling symlink is listed as a session but cannot be stat'ed.
+      yield* fileSystem.symlink(
+        path.join(unifiedRoot, "gone"),
+        path.join(unifiedRoot, OTHER_SESSION_ID),
+      );
+      const sources = yield* scan({
+        instances: [
+          {
+            id: "acpRegistry_mistral_vibe",
+            config: decodeSettings({ agentId: "mistral-vibe" }),
+            environment: { VIBE_HOME: vibeHome },
+          },
+        ],
+      });
+      assert.strictEqual(sources[0]?.status, "partial");
+      const records = sources[0]?.files?.flatMap((file) => file.records) ?? [];
+      assert.deepStrictEqual(
+        records.map((record) => record.sessionId),
+        [SESSION_ID],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("reports an unreadable session root as a partial scan", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const temp = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "mistral-vibe-unreadable-test-",
+      });
+      // A regular file where the vibe home should be: the session root below
+      // it cannot be checked, which is not the same as the root missing.
+      const vibeHome = path.join(yield* fileSystem.realPath(temp), "blocker");
+      yield* fileSystem.writeFileString(vibeHome, "not a directory");
+      const sources = yield* scan({
+        instances: [
+          {
+            id: "acpRegistry_mistral_vibe",
+            config: decodeSettings({ agentId: "mistral-vibe" }),
+            environment: { VIBE_HOME: vibeHome },
+          },
+        ],
+      });
+      assert.strictEqual(sources.length, 1);
+      assert.strictEqual(sources[0]?.dir, path.join(vibeHome, "logs", "session", "unified"));
+      assert.strictEqual(sources[0]?.status, "partial");
+      assert.deepStrictEqual(sources[0]?.files, []);
+      assert.ok(sources[0]?.message);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });

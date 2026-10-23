@@ -86,6 +86,33 @@ const readJsonFile = Effect.fnUntraced(function* (
   );
 });
 
+// Unlike the per-session reads, a failed catalog read can silently discard
+// newer journal-backed totals, so the caller needs to know it failed. A
+// missing catalog is not a failure: Vibe only writes it when it lists
+// sessions, and the published generations remain the primary source.
+const readCatalogJsonFile = Effect.fnUntraced(function* (
+  filePath: string,
+): Effect.fn.Return<{ value: unknown; failed: boolean }, never, FileSystem.FileSystem> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const result = yield* fileSystem.readFileString(filePath).pipe(
+    Effect.map((source) => ({ kind: "read" as const, source })),
+    Effect.catchTags({
+      PlatformError: (error) =>
+        Effect.succeed(
+          error.reason._tag === "NotFound"
+            ? { kind: "missing" as const }
+            : { kind: "failed" as const },
+        ),
+    }),
+  );
+  if (result.kind === "missing") return { value: null, failed: false };
+  if (result.kind === "failed") return { value: null, failed: true };
+  return Option.match(decodeUnknownJson(result.source), {
+    onNone: () => ({ value: null, failed: true }),
+    onSome: (value) => ({ value, failed: false }),
+  });
+});
+
 function parseSessionCatalog(parsed: unknown): ReadonlyMap<string, SessionUsageReading> {
   const entries = new Map<string, SessionUsageReading>();
   const document = object(parsed);
@@ -133,9 +160,15 @@ const readSessionDirectory = Effect.fn("mistralVibeUsage.readSessionDirectory")(
 ): Effect.fn.Return<SessionReadResult | null, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const info = yield* fileSystem.stat(sessionDir).pipe(Effect.orElseSucceed(() => null));
+  const stat = yield* fileSystem.stat(sessionDir).pipe(
+    Effect.map((info) => ({ ok: true as const, info })),
+    Effect.orElseSucceed(() => ({ ok: false as const })),
+  );
+  // A discovered session that cannot be stat'ed (permissions, a dangling
+  // symlink, a race with deletion) is unreadable, not absent.
+  if (!stat.ok) return { kind: "unreadable" };
   // Names that are not directories (stray files) are not sessions.
-  if (info?.type !== "Directory") return null;
+  if (stat.info.type !== "Directory") return null;
   const generationsDir = path.join(sessionDir, "generations");
   const generationNames = yield* fileSystem.readDirectory(generationsDir).pipe(
     Effect.map((names) => names.filter((name) => /^\d{16}$/.test(name)).sort()),
@@ -223,11 +256,23 @@ const scanSessionRoot = Effect.fn("mistralVibeUsage.scanSessionRoot")(function* 
 ): Effect.fn.Return<ProviderUsageScan, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const exists = yield* fileSystem
-    .exists(root)
-    .pipe(Effect.catchCause(() => Effect.succeed(false)));
-  if (!exists) return { dir: root, files: null };
-  const catalog = parseSessionCatalog(yield* readJsonFile(path.join(root, ".session-index.json")));
+  const existence = yield* fileSystem.exists(root).pipe(
+    Effect.map((exists) => ({ exists, failed: false as const })),
+    Effect.catchCause(() => Effect.succeed({ exists: false, failed: true as const })),
+  );
+  // A root that exists but cannot be checked (permissions, a non-directory
+  // path component) must not be reported as missing.
+  if (existence.failed) {
+    return {
+      dir: root,
+      files: [],
+      status: "partial" as const,
+      message: "The Mistral Vibe session root could not be read.",
+    };
+  }
+  if (!existence.exists) return { dir: root, files: null };
+  const catalogRead = yield* readCatalogJsonFile(path.join(root, ".session-index.json"));
+  const catalog = parseSessionCatalog(catalogRead.value);
   const directory = yield* fileSystem.readDirectory(root).pipe(
     Effect.map((names) => ({ names, failed: false as const })),
     Effect.orElseSucceed(() => ({ names: [] as string[], failed: true as const })),
@@ -257,7 +302,7 @@ const scanSessionRoot = Effect.fn("mistralVibeUsage.scanSessionRoot")(function* 
     });
   }
   files.sort((left, right) => left.path.localeCompare(right.path));
-  const incomplete = directory.failed || unreadable > 0;
+  const incomplete = catalogRead.failed || directory.failed || unreadable > 0;
   return {
     dir: root,
     files,
