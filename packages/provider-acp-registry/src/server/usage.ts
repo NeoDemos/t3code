@@ -182,7 +182,18 @@ const readSessionDirectory = Effect.fn("mistralVibeUsage.readSessionDirectory")(
     currentGeneration !== null && generationNames.includes(currentGeneration)
       ? currentGeneration
       : (generationNames.at(-1) ?? null);
-  if (generation === null) return { kind: "unreadable" };
+  // No published generation on disk: the journal-backed catalog reading is
+  // the only source for this session, and the session directory is the
+  // stable path since no projection file exists.
+  if (generation === null) {
+    if (catalogEntry === undefined) return { kind: "unreadable" };
+    return {
+      kind: "usage",
+      projectionPath: sessionDir,
+      reading: catalogEntry,
+      model: catalogEntry.model ?? UNKNOWN_MODEL,
+    };
+  }
   const generationDir = path.join(generationsDir, generation);
   const projectionPath = path.join(generationDir, "projection-state.json");
   const projection = yield* readJsonFile(projectionPath);

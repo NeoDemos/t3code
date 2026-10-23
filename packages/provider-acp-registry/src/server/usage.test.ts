@@ -563,6 +563,52 @@ describe("mistralVibeUsageReader", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("uses the catalog when a session has no published generation", () =>
+    Effect.gen(function* () {
+      const { vibeHome, unifiedRoot } = yield* makeVibeHome();
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // A session directory with no generations on disk, but a journal-backed
+      // catalog reading.
+      yield* fileSystem.makeDirectory(path.join(unifiedRoot, SESSION_ID), { recursive: true });
+      yield* writeCatalog(unifiedRoot, [
+        {
+          sessionId: SESSION_ID,
+          fixture: {
+            tokenUsage: {
+              cachedInputTokens: 10,
+              inputTokens: 100,
+              outputTokens: 5,
+              totalTokens: 105,
+            },
+            updatedAt: UPDATED_AT,
+            model: "mistral-large-4",
+          },
+        },
+      ]);
+      const sources = yield* scan({
+        instances: [
+          {
+            id: "acpRegistry_mistral_vibe",
+            config: decodeSettings({ agentId: "mistral-vibe" }),
+            environment: { VIBE_HOME: vibeHome },
+          },
+        ],
+      });
+      assert.strictEqual(sources[0]?.status, "ok");
+      const files = sources[0]?.files ?? [];
+      assert.strictEqual(files.length, 1);
+      // No projection file exists, so the session directory is the source path.
+      assert.strictEqual(files[0]?.path, path.join(unifiedRoot, SESSION_ID));
+      const records = files.flatMap((file) => file.records);
+      assert.strictEqual(records.length, 1);
+      assert.strictEqual(records[0]?.sessionId, SESSION_ID);
+      assert.strictEqual(records[0]?.model, "mistral-large-4");
+      assert.strictEqual(records[0]?.timestampMs, UPDATED_AT);
+      assert.strictEqual(records[0]?.totals.uncachedInputTokens, 90);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reports an unreadable session root as a partial scan", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
