@@ -20,14 +20,9 @@ const UNKNOWN_MODEL = "unknown";
 
 /**
  * Vibe writes cumulative per-session token counts under
- * `<vibe home>/logs/session/unified/<session id>/`. Each session directory
- * holds a `CURRENT` pointer to the latest published generation, whose
- * `projection-state.json` carries the session's cumulative `tokenUsage`, and
- * whose `runtime-state.json` records the active model. A `.session-index.json`
- * catalog in the same directory caches the same reading with the recovery
- * journal applied, so it can be fresher than the published generation; it is
- * only rewritten when Vibe itself lists sessions, so it can also lag. The
- * reader merges both and keeps whichever reading is newer.
+ * `<vibe home>/logs/session/unified/<session id>/` (`CURRENT` generation:
+ * `projection-state.json` totals, `runtime-state.json` model) and a
+ * `.session-index.json` catalog that can lag or lead; keep the newer reading.
  */
 
 function isMistralVibeInstance(config: AcpRegistrySettings | undefined): boolean {
